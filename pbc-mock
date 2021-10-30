@@ -129,6 +129,7 @@ _rpm_build(){
 	chroot "$1" sudo -u "$user" rpmbuild \
 		--define "_sourcedir $2" \
 		--define "packager $4" \
+		--define "_topdir /${user}/rpmbuild" \
 		-bb \
 		"$3"
 }
