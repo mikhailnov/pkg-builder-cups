@@ -31,6 +31,8 @@ SPEC="$4"
 SOURCEDIR="$5"
 # e.g.: /tmp/results
 RESULTSDIR="$6"
+# e.g.: Vasya Pupkin <vasya@pupkin.tld>
+PACKAGER="$7"
 # TODO: validate values of envs
 
 # $1: platform
@@ -117,6 +119,7 @@ _dnf_install_builddeps(){
 # $1: chroot
 # $2: rpm spec
 # $3: rpm _sourcedir
+# $4: packager
 _rpm_build(){
 	# some packages refuse to build from root
 	local user=rpmbuilder
@@ -126,6 +129,7 @@ _rpm_build(){
 	# TODO: use runuser instead of sudo
 	chroot "$1" sudo -u "$user" rpmbuild \
 		--define "_sourcedir $2" \
+		--define "packager $4" \
 		-bb \
 		"$3"
 }
@@ -164,7 +168,7 @@ _main(){
 	_mk_dnf_conf "$PLATFORM" "$ARCH" > "$dnf_conf"
 	_dnf_init_chroot "$dnf_conf" "$chroot" "$ARCH"
 	_dnf_install_builddeps "$dnf_conf" "$chroot" "$ARCH" "$SPEC"
-	_rpm_build "$chroot" /rpm_sourcedir /rpm.spec
+	_rpm_build "$chroot" /rpm_sourcedir /rpm.spec "$PACKAGER"
 	_copy_results "$chroot" "$RESULTSDIR"
 }
 
