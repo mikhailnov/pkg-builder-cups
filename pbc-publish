@@ -28,7 +28,7 @@ _main(){
 	if [ -n "$debug_pkgs" ]; then
 		mkdir -p "$REPO"/"$ARCH"/debug
 		echo "$debug_pkgs" | xargs -I'{}' cp '{}' "$REPO"/"$ARCH"/debug
-		# TODO: createrepo_c for release and debug can be parallelized
+		# XXX createrepo_c for release and debug can be parallelized
 		_createrepo_c "$REPO"/"$ARCH"/debug
 	fi
 }
