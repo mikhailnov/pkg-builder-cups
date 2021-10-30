@@ -1,0 +1,125 @@
+#!/bin/bash
+
+# mkdir /var/lib/pbc/db-git
+# create user pbc-db-git and setup SSH keys to make is be able to access e.g. Gitea git remote
+
+set -e
+set -x
+# for () in _git_hook
+set +f
+#export LC_ALL=C
+
+DB_DIR="${DB_DIR:-/var/lib/pbc/db-git}"
+GIT_TRIGGER=1
+#GIT_USER=pbc-db-git
+GIT_USER=user
+ACTION="$1"
+# e.g.:
+# publish: dumalogiya-fedora-pkgs/rubygems-kopyto
+# delete: empty ("")
+PROJECT="$2"
+# e.g.:
+# publish: pbc-builder1-50, where pbc-builder1 is printer name in CUPS
+# delete: empty
+BUILD_ID="$3"
+# comma-separated list of absolute paths to *.rpm packages
+# e.g.: clr-power-tweaks-212-1-rosa2021.1.x86_64.rpm,clr-power-tweaks-debuginfo-212-1-rosa2021.1.x86_64.rpm
+FILES="$4"
+
+set -u
+
+# git is run under a separate user to make it be able to access a remote git repo via SSH
+_git(){
+	# TODO: use runuser instead of sudo
+	sudo -u "$GIT_USER" git "$@"
+}
+
+_git_hook(){
+    if [ "$GIT_TRIGGER" != 1 ]; then return 0; fi
+    pushd "$DB_DIR"
+    #timeout 5 _git pull --no-edit || :
+    # We may "git add .", but let's ensure that any random junk does not get into git
+    _git add ./*.csv
+    _git commit -m "DB updated (${ACTION})" --author "pbc-db-git <rpmbuilder@localhost.tld>"
+    # fail in git push is not a fatal error, it may be pushed next time
+    # XXX there is no remote added by default
+    timeout 15 _git push || :
+    popd
+}
+# perform _git_hook on _any_ exit
+trap "_git_hook" EXIT
+
+_init_db(){
+	# list of usable packages, old builds will be deleted from this list
+	if [ ! -f packages.csv ]; then
+		echo "path_fo_file.rpm;project;build_id" > packages.csv
+	fi
+	if [ ! -d ".git" ]; then
+		_git init
+		_git config user.name "pbc-db-git"
+		_git config user.email "pbc-db-git <rpmbuilder@localhost.tld>"
+		_git add .
+		_git commit -m "Initial commit (auto)"
+		# Run it manuall if needed:
+		#_git remote add origin <...>
+		#_git push --set-upstream origin master
+	fi
+}
+
+# $1: file
+# $2: project
+# $3: build is
+_add_published(){
+	echo "$1;$2;$3" >> packages.csv
+}
+
+# $1: file
+_delete_old(){
+	sed -i'' packages.csv -e "/^${1}/d"
+}
+
+_main(){
+	cd "$DB_DIR"
+	local IFS_old
+	IFS_old="$IFS"
+	case "$ACTION" in
+		init-db )
+			GIT_TRIGGER=0
+			_init_db
+		;;
+		publish )
+			# TODO: a better regex
+			if ! [[ "$PROJECT" =~ ..*/..* ]]; then
+				echo "Incorrect project name, must be in form: foo1/foo2, e.g.: dumalogiya-fedora-pkgs/rubygems-kopyto"
+				return 1
+			fi
+			GIT_TRIGGER=1
+			_init_db
+			IFS=','
+			for i in ${FILES}
+			do
+				echo XXX $i
+				_add_published "$i" "$PROJECT" "$BUILD_ID"
+			done
+		;;
+		delete )
+			GIT_TRIGGER=1
+			_init_db
+			IFS=','
+			for i in ${FILES}
+			do
+				_delete_old "$i"
+			done
+		;;
+		* )
+			echo "Unknown action!"
+			return 1
+		;;
+	esac
+	IFS="$IFS_old"
+}
+
+SOURCED="${SOURCED:-0}"
+if [ "$SOURCED" != 1 ]; then
+	_main "$@"
+fi
