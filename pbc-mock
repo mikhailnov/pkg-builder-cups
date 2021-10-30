@@ -5,7 +5,6 @@
 # /var/lib/pbc
 # /var/lib/pbc/chroots
 # /var/lib/pbc/dnf-caches
-# /var/lib/pbc/dnf-caches/rosa2021.1
 
 # requires:
 # mount --recursive
@@ -67,6 +66,33 @@ gpgcheck=0
 enabled=1
 "
 		;;
+		fc34 ) echo "
+cachedir=/var/lib/pbc/dnf-caches/fc34
+[fc34_everything_${2}]
+name=fc34_everything_${2}
+baseurl=https://mirror.yandex.ru/fedora/linux/releases/34/Everything/x86_64/os/
+gpgcheck=0
+enabled=1
+"
+		;;
+		fc35 ) echo "
+cachedir=/var/lib/pbc/dnf-caches/fc35
+[fc35_everything_${2}]
+name=fc35_everything_${2}
+baseurl=https://mirror.yandex.ru/fedora/linux/development/35/Everything/x86_64/os/
+gpgcheck=0
+enabled=1
+"
+		;;
+		rawhide ) echo "
+cachedir=/var/lib/pbc/dnf-caches/rawhide
+[rawhide_everything_${2}]
+name=rawhide_everything_${2}
+baseurl=https://mirror.yandex.ru/fedora/linux/development/rawhide/Everything/x86_64/os/
+gpgcheck=0
+enabled=1
+"
+		;;
 		* ) return 1
 		;;
 	esac
@@ -87,7 +113,9 @@ _cleanup(){
 # $1: dnf config
 # $2: chroot
 # $3: arch
+# $4: bootstrap packages
 _dnf_init_chroot(){
+	# shellcheck disable=SC2086
 	dnf \
 		--refresh \
 		--config "$1" \
@@ -95,7 +123,7 @@ _dnf_init_chroot(){
 		--forcearch "$3" \
 		--nodocs \
 		install \
-			basesystem-build \
+			${4} \
 			sudo
 }
 
@@ -155,7 +183,7 @@ _main(){
 	# dnf makes $cachedir relative to $installroot
 	# XXX this implementation of dnf cache probably is not multithreadble
 	# (multiple dnf instances probably won't be able to use the same cache)
-	mkdir -p "$chroot"/var/lib/pbc/dnf-caches
+	mkdir -p "$chroot"/var/lib/pbc/dnf-caches/"$PLATFORM"
 	mount --bind /var/lib/pbc/dnf-caches "$chroot"/var/lib/pbc/dnf-caches
 	touch "$chroot"/rpm.spec
 	mount --bind "$SPEC" "$chroot"/rpm.spec
@@ -166,7 +194,13 @@ _main(){
 	local dnf_conf
 	dnf_conf="$chroot"/dnf.conf
 	_mk_dnf_conf "$PLATFORM" "$ARCH" > "$dnf_conf"
-	_dnf_init_chroot "$dnf_conf" "$chroot" "$ARCH"
+	local pkgs
+	case "$PLATFORM" in
+		rosa2021.1 ) pkgs="basesystem-build" ;;
+		fc34 | fc35 | rawhide ) pkgs="build rpm-build" ;;
+		* ) echo "Unknown platform" && return 1 ;;
+	esac
+	_dnf_init_chroot "$dnf_conf" "$chroot" "$ARCH" "$pkgs"
 	_dnf_install_builddeps "$dnf_conf" "$chroot" "$ARCH" "$SPEC"
 	_rpm_build "$chroot" /rpm_sourcedir /rpm.spec "$PACKAGER"
 	_copy_results "$chroot" "$RESULTSDIR"
