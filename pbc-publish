@@ -1,8 +1,15 @@
 #!/bin/bash
 
+# requires: createrepo_c, findutils
+
 set -efu
 set -x
 export LC_ALL=C
+
+# detect running from local (development) directory
+if [ -f ./pbc-db-git ]; then
+	export PATH="$PWD:$PATH"
+fi
 
 # e.g.: /tmp/results
 RESULTSDIR="$1"
@@ -13,6 +20,10 @@ ARCH="$3"
 # subdirectories will be created:
 # - $ARCH/release
 # - $ARCH/debug (debuginfo and debugsource will go here if present)
+# e.g.: dumalogiya-fedora-pkgs/rubygems-kopyto
+PROJECT="$4"
+# e.g.: pbc-builder1-50, where pbc-builder1 is printer name in CUPS
+BUILD_ID="$5"
 
 # $1: directory
 _createrepo_c(){
@@ -20,17 +31,58 @@ _createrepo_c(){
 }
 
 _main(){
+	# TODO: a better regex
+	if ! [[ "$PROJECT" =~ ..*/..* ]]; then
+		echo "Incorrect project name, must be in form: foo1/foo2, e.g.: dumalogiya-fedora-pkgs/rubygems-kopyto"
+		return 1
+	fi
+
 	mkdir -p "$REPO"/"$ARCH"/release
-	find "$RESULTSDIR" -name '*.rpm' | grep -vE -- '-debug(info|source)-' | xargs -I'{}' cp '{}' "$REPO"/"$ARCH"/release
+
+	local tmp
+	tmp="$(mktemp)"
+	# shellcheck disable=SC2064
+	trap "rm -f $tmp" EXIT
+
+	local pkgs_release
+	pkgs_release="$(find "$RESULTSDIR" -name '*.rpm' | grep -vE -- '-debug(info|source)-')"
+	local pkgs_debug
+	pkgs_debug="$(find "$RESULTSDIR" -name '*.rpm' | grep -E -- '-debug(info|source)-' || :)"
+
+	local old_files
+	old_files="$(pbc-db-git get-files-of-project "$PROJECT")"
+	if [ -n "$old_files" ]; then
+		echo "$old_files" | while read -r line
+		do
+			[ -n "$line" ] || continue
+			if echo -e "${pkgs_release}\n${pkgs_debug}" | grep -q "$(basename "$line")"; then
+				echo "Cannot process already existing files!"
+				return 1
+			fi
+			rm "$line"
+		done
+		pbc-db-git delete "" "" "$(echo "$old_files" | tr '\n' ',')"
+	fi
+
+	echo "$pkgs_release" | while read -r line
+	do
+		cp "$line" "$REPO"/"$ARCH"/release
+		echo "${REPO}/${ARCH}/release/$(basename "${line}")" >> "$tmp"
+	done
+
 	_createrepo_c "$REPO"/"$ARCH"/release
-	local debug_pkgs
-	debug_pkgs="$(find "$RESULTSDIR" -name '*.rpm' | grep -E -- '-debug(info|source)-' || :)"
-	if [ -n "$debug_pkgs" ]; then
+	if [ -n "$pkgs_debug" ]; then
 		mkdir -p "$REPO"/"$ARCH"/debug
-		echo "$debug_pkgs" | xargs -I'{}' cp '{}' "$REPO"/"$ARCH"/debug
+		echo "$pkgs_debug" | while read -r line
+		do
+			cp "$line" "$REPO"/"$ARCH"/debug
+			echo "${REPO}/${ARCH}/debug/$(basename "${line}")" >> "$tmp"
+		done
 		# XXX createrepo_c for release and debug can be parallelized
 		_createrepo_c "$REPO"/"$ARCH"/debug
 	fi
+
+	pbc-db-git publish "$PROJECT" "$BUILD_ID" "$(tr '\n' ',' < "$tmp")"
 }
 
 SOURCED="${SOURCED:-0}"

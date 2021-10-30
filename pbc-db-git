@@ -2,11 +2,14 @@
 
 # mkdir /var/lib/pbc/db-git
 # create user pbc-db-git and setup SSH keys to make is be able to access e.g. Gitea git remote
+# requires: gawk
 
 set -e
 set -x
 # for () in _git_hook
 set +f
+# for timeout _git
+set -a
 #export LC_ALL=C
 
 DB_DIR="${DB_DIR:-/var/lib/pbc/db-git}"
@@ -43,7 +46,7 @@ _git_hook(){
     _git commit -m "DB updated (${ACTION})" --author "pbc-db-git <rpmbuilder@localhost.tld>"
     # fail in git push is not a fatal error, it may be pushed next time
     # XXX there is no remote added by default
-    timeout 15 _git push || :
+    timeout 15 bash -c '_git push || :'
     popd
 }
 # perform _git_hook on _any_ exit
@@ -75,7 +78,17 @@ _add_published(){
 
 # $1: file
 _delete_old(){
-	sed -i'' packages.csv -e "/^${1}/d"
+	# nothing to delete, it's OK
+	if ! grep -q "^${1};" packages.csv ; then
+		GIT_TRIGGER=0
+		return 0
+	fi
+	sed -i'' packages.csv -e "\,^${1},d"
+}
+
+# $1: project
+_get_files_of_project(){
+	grep ";${1};" packages.csv | awk -F ';' '{print $1}'
 }
 
 _main(){
@@ -86,6 +99,10 @@ _main(){
 		init-db )
 			GIT_TRIGGER=0
 			_init_db
+		;;
+		get-files-of-project )
+			GIT_TRIGGER=0
+			_get_files_of_project "$PROJECT"
 		;;
 		publish )
 			# TODO: a better regex
@@ -98,7 +115,7 @@ _main(){
 			IFS=','
 			for i in ${FILES}
 			do
-				echo XXX $i
+				[ -n "$i" ] || continue
 				_add_published "$i" "$PROJECT" "$BUILD_ID"
 			done
 		;;
@@ -108,6 +125,7 @@ _main(){
 			IFS=','
 			for i in ${FILES}
 			do
+				[ -n "$i" ] || continue
 				_delete_old "$i"
 			done
 		;;
