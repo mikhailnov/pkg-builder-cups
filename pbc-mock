@@ -1,0 +1,174 @@
+#!/bin/bash
+# Generate mock config for the target distribution, print it to stdout
+# mock: https://github.com/rpm-software-management/mock
+
+# mkdir:
+# /var/lib/pbc
+# /var/lib/pbc/chroots
+# /var/lib/pbc/dnf-caches
+# /var/lib/pbc/dnf-caches/rosa2021.1
+
+# requires:
+# mount --recursive
+# 'dnf-command(builddep)'
+# sed
+# findutils
+
+set -efu
+set -x
+export LC_ALL=C
+# e.g.: rosa2021.1
+PLATFORM="$1"
+# e.g.: x86_63, i686, aarch64
+ARCH="$2"
+# e.g.: True, False
+TMPFS="$3"
+# TODO: make it configurable
+TMPFS_SIZE=10g
+# e.g.: /tmp/foo/foo.spec
+SPEC="$4"
+# e.g.: /tmp/foo/foo, where all Source* for spec are located
+SOURCEDIR="$5"
+# e.g.: /tmp/results
+RESULTSDIR="$6"
+# TODO: validate values of envs
+
+# $1: platform
+# $2: arch
+_mk_dnf_conf(){
+	echo "
+[main]
+keepcache=1
+debuglevel=2
+reposdir=/dev/null
+retries=20
+obsoletes=1
+gpgcheck=0
+assumeyes=1
+syslog_ident=mock
+syslog_device=
+install_weak_deps=0
+metadata_expire=60s
+best=1
+"
+	case "$1" in
+		rosa2021.1 ) echo "
+cachedir=/var/lib/pbc/dnf-caches/rosa2021.1
+[rosa2021.1_main_release_${2}]
+name=rosa2021.1_main_release_${2}
+baseurl=http://abf-downloads.rosalinux.ru/rosa2021.1/repository/${2}/main/release
+gpgcheck=0
+enabled=1
+[rosa2021.1_contrib_release_${2}]
+name=rosa2021.1_contrib_release_${2}
+baseurl=http://abf-downloads.rosalinux.ru/rosa2021.1/repository/${2}/contrib/release
+gpgcheck=0
+enabled=1
+"
+		;;
+		* ) return 1
+		;;
+	esac
+}
+
+_create_chroot_dir(){
+	mktemp --tmpdir=/var/lib/pbc/chroots --suffix=.pbc -d
+}
+
+# $1: chroot
+# $2: tmpfs True/False
+_cleanup(){
+	local chroot="$1"
+	umount --recursive "$chroot"
+	rm -fr "$chroot"
+}
+
+# $1: dnf config
+# $2: chroot
+# $3: arch
+_dnf_init_chroot(){
+	dnf \
+		--refresh \
+		--config "$1" \
+		--installroot "$2" \
+		--forcearch "$3" \
+		--nodocs \
+		install \
+			basesystem-build \
+			sudo
+}
+
+# $1: dnf config
+# $2: chroot
+# $3: arch
+# $5: spec file
+# XXX A spec file may theoretically be not parsable without correct _sourcedir and/or rpm macros
+# TODO: maybe run it in the chroot, but cache will be not reused without tricks
+_dnf_install_builddeps(){
+	dnf \
+		--refresh \
+		--config "$1" \
+		--installroot "$2" \
+		--forcearch "$3" \
+		--nodocs \
+		builddep "$4"
+}
+
+# $1: chroot
+# $2: rpm spec
+# $3: rpm _sourcedir
+_rpm_build(){
+	# some packages refuse to build from root
+	local user=rpmbuilder
+	if ! chroot "$1" getent passwd "$user" >/dev/null 2>&1; then
+		chroot "$1" useradd --home-dir /"$user" "$user"
+	fi
+	# TODO: use runuser instead of sudo
+	chroot "$1" sudo -u "$user" rpmbuild \
+		--define "_sourcedir $2" \
+		-bb \
+		"$3"
+}
+
+# $1: chroot
+# $2: results dir
+_copy_results(){
+	mkdir -p "$2"
+	find "$1"/rpmbuilder/rpmbuild/RPMS -name '*.rpm' | xargs -I'{}' cp '{}' "$2"
+}
+
+_main(){
+	local chroot
+	chroot="$(_create_chroot_dir)"
+	if [ "$TMPFS" = True ]; then
+		mount -t tmpfs -o size="$TMPFS_SIZE" tmpfs "$chroot"
+	fi
+	mkdir -p "$chroot"/proc
+	mount -t proc proc "$chroot"/proc
+	mkdir -p "$chroot"/dev
+	# TODO: do it somehow better
+	mount --bind /dev "$chroot"/dev
+	# dnf makes $cachedir relative to $installroot
+	# XXX this implementation of dnf cache probably is not multithreadble
+	# (multiple dnf instances probably won't be able to use the same cache)
+	mkdir -p "$chroot"/var/lib/pbc/dnf-caches
+	mount --bind /var/lib/pbc/dnf-caches "$chroot"/var/lib/pbc/dnf-caches
+	touch "$chroot"/rpm.spec
+	mount --bind "$SPEC" "$chroot"/rpm.spec
+	mkdir -p "$chroot"/rpm_sourcedir
+	mount --bind "$SOURCEDIR" "$chroot"/rpm_sourcedir
+	# shellcheck disable=SC2064
+	trap "_cleanup $chroot $TMPFS" EXIT
+	local dnf_conf
+	dnf_conf="$chroot"/dnf.conf
+	_mk_dnf_conf "$PLATFORM" "$ARCH" > "$dnf_conf"
+	_dnf_init_chroot "$dnf_conf" "$chroot" "$ARCH"
+	_dnf_install_builddeps "$dnf_conf" "$chroot" "$ARCH" "$SPEC"
+	_rpm_build "$chroot" /rpm_sourcedir /rpm.spec
+	_copy_results "$chroot" "$RESULTSDIR"
+}
+
+SOURCED="${SOURCED:-0}"
+if [ "$SOURCED" != 1 ]; then
+	_main "$@"
+fi
