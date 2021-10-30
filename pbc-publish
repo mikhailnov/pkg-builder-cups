@@ -1,0 +1,39 @@
+#!/bin/bash
+
+set -efu
+set -x
+export LC_ALL=C
+
+# e.g.: /tmp/results
+RESULTSDIR="$1"
+# e.g.: /tmp/repo/rosa2021.1
+REPO="$2"
+# e.g.: x86_64
+ARCH="$3"
+# subdirectories will be created:
+# - $ARCH/release
+# - $ARCH/debug (debuginfo and debugsource will go here if present)
+
+# $1: directory
+_createrepo_c(){
+	createrepo_c --xz --zck --update "$1"
+}
+
+_main(){
+	mkdir -p "$REPO"/"$ARCH"/release
+	find "$RESULTSDIR" -name '*.rpm' | grep -vE -- '-debug(info|source)-' | xargs -I'{}' cp '{}' "$REPO"/"$ARCH"/release
+	_createrepo_c "$REPO"/"$ARCH"/release
+	local debug_pkgs
+	debug_pkgs="$(find "$RESULTSDIR" -name '*.rpm' | grep -E -- '-debug(info|source)-' || :)"
+	if [ -n "$debug_pkgs" ]; then
+		mkdir -p "$REPO"/"$ARCH"/debug
+		echo "$debug_pkgs" | xargs -I'{}' cp '{}' "$REPO"/"$ARCH"/debug
+		# TODO: createrepo_c for release and debug can be parallelized
+		_createrepo_c "$REPO"/"$ARCH"/debug
+	fi
+}
+
+SOURCED="${SOURCED:-0}"
+if [ "$SOURCED" != 1 ]; then
+	_main "$@"
+fi
