@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # requires: createrepo_c, findutils
+# TODO: keep repository consistent while this script is working (cp --reflink on btrfs?)
 
 set -efu
 set -x
