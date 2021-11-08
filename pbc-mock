@@ -169,25 +169,38 @@ _copy_results(){
 	find "$1"/rpmbuilder/rpmbuild/RPMS -name '*.rpm' | xargs -I'{}' cp '{}' "$2"
 }
 
+# avoid ownership root:lp when running under CUPS
+_mkdir_in_chroot(){
+	mkdir -p "$1"
+	chown root:root "$1"
+	chmod 755 "$1"
+}
+
+_touch_in_chroot(){
+	touch "$1"
+	chown root:root "$1"
+	chmod 644 "$1"
+}
+
 _main(){
 	local chroot
 	chroot="$(_create_chroot_dir)"
 	if [ "$TMPFS" = True ]; then
 		mount -t tmpfs -o size="$TMPFS_SIZE" tmpfs "$chroot"
 	fi
-	mkdir -p "$chroot"/proc
+	_mkdir_in_chroot "$chroot"/proc
 	mount -t proc proc "$chroot"/proc
-	mkdir -p "$chroot"/dev
+	_mkdir_in_chroot "$chroot"/dev
 	# TODO: do it somehow better
 	mount --bind /dev "$chroot"/dev
 	# dnf makes $cachedir relative to $installroot
 	# XXX this implementation of dnf cache probably is not multithreadble
 	# (multiple dnf instances probably won't be able to use the same cache)
-	mkdir -p "$chroot"/var/lib/pbc/dnf-caches/"$PLATFORM"
+	_mkdir_in_chroot "$chroot"/var/lib/pbc/dnf-caches/"$PLATFORM"
 	mount --bind /var/lib/pbc/dnf-caches "$chroot"/var/lib/pbc/dnf-caches
-	touch "$chroot"/rpm.spec
+	_touch_in_chroot "$chroot"/rpm.spec
 	mount --bind "$SPEC" "$chroot"/rpm.spec
-	mkdir -p "$chroot"/rpm_sourcedir
+	_mkdir_in_chroot "$chroot"/rpm_sourcedir
 	mount --bind "$SOURCEDIR" "$chroot"/rpm_sourcedir
 	# shellcheck disable=SC2064
 	trap "_cleanup $chroot $TMPFS" EXIT
