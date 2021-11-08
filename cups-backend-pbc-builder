@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# Put it into /usr/lib/cups/backend/bbb-build-recording
+# Based on examples at https://community.kde.org/Printing/Developer_Tools
+# Docs:
+# - backend(7) https://www.cups.org/doc/man-backend.html
+###############################################################################
+
+set -ef
+set -o pipefail
+set -x
+
+export TMPDIR=/tmp
+
+# jobtitle=project/package name
+# examples: import/dos2unix, dos2unix
+readonly jobtitle="$(echo "$3" | awk -F '/' '{print $NF}')"
+# lp -o packager_name="Vasya Pupkin" -o packager_email="vasya@pupkin.tld"
+joboptions=${5}
+
+# Exit codes from /usr/include/cups/backend.h
+CUPS_BACKEND_OK=0                  # Job completed successfully
+CUPS_BACKEND_FAILED=1              # Job failed, use error-policy
+CUPS_BACKEND_AUTH_REQUIRED=2       # Job failed, authentication required
+CUPS_BACKEND_HOLD=3                # Job failed, hold job
+CUPS_BACKEND_STOP=4                # Job failed, stop queue
+CUPS_BACKEND_CANCEL=5              # Job failed, cancel job
+CUPS_BACKEND_RETRY=6               # Job failed, retry this job later
+CUPS_BACKEND_RETRY_CURRENT=7       # Job failed, retry this job immediately
+
+# Assume that nothing secret is being "printed"
+# Otherwise we will have to play with setfacl (ACL) because rpmbuild is run from non-root
+umask 0022
+# TODO: we use set -e, exit code from a program with error may have the same number as CUPS codes above
+tmpdir="$(mktemp -d)"
+# allow user "rpmbuilder" in pbc-mock to read it
+chown root:root "$tmpdir"
+chmod 755 "$tmpdir"
+_trap_exit(){
+	rm -fr "$tmpdir"
+}
+trap '_trap_exit' EXIT
+
+input=""
+# $6 may or not be defined,
+# if it is defined - it is a tar archive with the following structure:
+# ./file.spec
+# ./Source0
+# If it is not, then a tarball with the same structure is passed as stdin
+case ${#} in
+	0 )
+		# This is CUPS listing backends
+		# device-class scheme "Unknown" "device-info"
+		echo direct pbc-builder \"Unknown\" \"Build RPM packages\"
+		exit
+	;;
+	5 )
+		input=/dev/stdin
+	;;
+	6 )
+		# do not remove {} here!
+		input="${6}"
+	;;
+	* )
+		echo CRIT: unsupported number of arguements! 1>&2
+		exit "$CUPS_BACKEND_FAILED"
+	;;
+esac
+
+if [ "$jobtitle" = "(stdin)" ]; then
+	echo CRIT: printing job must be titled! 1>&2
+	exit "$CUPS_BACKEND_FAILED"
+fi
+
+# target distribution: rosa2021.1, fc35 etc.
+# pbc-builder://rosa2021.1/x86_64 -> rosa2021.1
+platform="$(echo "$DEVICE_URI" | sed -e 's,//,/,' | awk -F '/' '{print $2}')"
+# pbc-builder://rosa2021.1/x86_64 -> x86_64
+arch="$(echo "$DEVICE_URI" | sed -e 's,//,/,' | awk -F '/' '{print $3}')"
+# lp -o packager_name="Vasya%20Pupkin" -o packager_email="vasya@pupkin.tld"
+packager_name="$(echo "$5" | tr ' ' '\n' | grep ^packager_name= | sed -e 's,%20, ,g' | tail -n 1)"
+packager_email="$(echo "$5" | tr ' ' '\n' | grep ^packager_email= | tail -n 1)"
+
+dd if="$input" | tar -C "$tmpdir" -xf -
+
+spec="$(find "$tmpdir" -maxdepth 1 -type f -name '*.spec' -print)"
+if [ "$(echo "$spec" | grep -c .)" != 1 ]; then
+	echo CRIT: More than one spec file exists!
+	exit "$CUPS_BACKEND_CANCEL"
+fi
+
+#pbc-mock rosa2021.1 x86_64 True /mnt/dev/rosa-pkgs/clr-power-tweaks/clr-power-tweaks.spec /mnt/dev/rosa-pkgs/clr-power-tweaks /tmp/results "Vasya Pupkin <vasya@pupkin.tld>"
+# TODO: remove setting PATH and do not hardcode /tmp/results
+export PATH="/mnt/dev/sources/pkg-builder-cups:$PATH"
+pbc-mock "$platform" "$arch" True "$spec" "$tmpdir" /tmp/results "${packager_name} <${packager_email}>"
+# TODO: call pbc-publish via creating a separate printer queue to avoid concurrent publishes
